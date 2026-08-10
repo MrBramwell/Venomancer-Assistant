@@ -2,8 +2,6 @@
 
 A World of Warcraft addon for Ascension's custom Venomancer class, built for the **Conquest of Azeroth** realm. Tracks your Brood Marks and Exposed Flesh stacks, gives you a dedicated bar for applying weapon venoms, and warns you about a few easy-to-miss states — all fully configurable, all draggable, all locked together with one setting.
 
-> Formerly known as "Brood Marks." Settings carry over automatically if you're upgrading from that version — nothing to reconfigure.
-
 ## Features
 
 ### Stack Trackers
