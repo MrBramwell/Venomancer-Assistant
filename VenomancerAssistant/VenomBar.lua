@@ -125,6 +125,7 @@ local VENOM_EXCLUDE = {
 	["envenomed weapons"] = true,
 	["remove venoms"] = true,
 	["antivenom"] = true,
+	["withering venom"] = true,
 }
 
 -- Hidden scanning tooltip, used only to read a venom's actual mechanical
