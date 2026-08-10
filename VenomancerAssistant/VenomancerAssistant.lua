@@ -1,40 +1,16 @@
 --[[
-	Venomancer Assistant 3.0.0
-	(formerly "Brood Marks" - renamed as it's expanded beyond just the
-	stack trackers to include the Venom Bar and future Venomancer tools)
-
+	Venomancer Assistant 1.1.0
 	Per-stack icon tracker for two Ascension form-based resources:
 
 	  - Brood Marks: the Venomancer's Spider Form stacking self-buff.
 	  - Exposed Flesh: a tank-form (Beetle Form) stacking debuff that
 	    needs clearing before it caps.
-
-	Both are detected via UnitBuff("player", i) rather than the native
-	GetComboPoints() API (custom Ascension classes generally aren't wired
-	into that), and both are gated to the matching shapeshift form - so
-	Brood Marks only tracks while you're actually in Spider Form, and
-	Exposed Flesh only while in Beetle Form. Only one can be relevant at
-	a time anyway, since you can't be in both forms at once, so the
-	tracker frame just shows whichever one currently applies and hides
-	otherwise.
-
-	The exact buff names and form names are all configurable in the
-	options panel rather than hardcoded, since that's the one thing most
-	likely to be slightly off if Ascension's actual text differs from
-	what's assumed here - fixing that shouldn't require another addon
-	update.
 ]]
 
 local ADDON_NAME = "VenomancerAssistant"
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local PIP_POOL_MAX = 15 -- generous ceiling; both trackers' max-stack sliders are clamped under this
 
--- Shown in place of a red question mark before the real buff/debuff icon
--- has ever been seen this session (which is always the case in test
--- mode, unless you've also encountered the real thing). These are
--- thematic placeholders, not necessarily the exact real spell icons -
--- I don't have a reliable way to confirm the literal icon texture path
--- Ascension uses for these two without seeing it live.
 local DEFAULT_TRACKER_ICON = {
 	bm = "Interface\\Icons\\Ability_Hunter_Pet_Spider",
 	ef = "Interface\\Icons\\INV_Misc_MonsterScales_03",
@@ -48,11 +24,6 @@ local defaults = {
 	spacing = 4,
 	growth = "RIGHT",       -- "RIGHT" or "LEFT"
 	showEmpty = true,       -- show dim placeholder slots for marks not yet gained
-	-- testMode/testTracker/testCount are internal only now, driven by the
-	-- Preview buttons on the Brood Marks/Exposed Flesh tabs (DoPreview) -
-	-- no longer exposed as a standalone toggle+picker in their own tab,
-	-- since that was a second, inconsistent path to the same "show the
-	-- tracker at a given count" behavior Preview already needed.
 	testMode = false,
 	testCount = 3,
 	testTracker = "bm",
@@ -68,10 +39,6 @@ local defaults = {
 	buffName = "Brood Mark",
 	maxMarks = 5, -- fixed - not user-adjustable, same as Exposed Flesh's cap
 
-	-- Brood Marks max-stack effects. "flashAtMax" (glow) and
-	-- "effectPulse" run continuously for as long as you're at max
-	-- stacks. The rest fire once, the moment you hit max, and don't
-	-- repeat until you drop below and hit it again.
 	flashAtMax = true,
 	effectPulse = false,
 	effectColorFlash = false,
@@ -146,15 +113,6 @@ end
 -- Main frame
 --------------------------------------------------------------------------------
 
--- A separate, never-resized anchor holds the actual saved screen
--- position. main (the pip container) always pins its LEFT edge to this
--- anchor's LEFT edge with zero offset - so no matter how wide main gets
--- (5 pips for Brood Marks vs 10 for Exposed Flesh, or any icon size/
--- scale change), the row always starts from the exact same fixed point.
--- Without this indirection, main's own single-point anchor (e.g.
--- "CENTER") would keep that center fixed while resizing, which shifts
--- the left edge - and therefore the whole row - every time the pip
--- count differs between the two trackers.
 local anchorFrame = CreateFrame("Frame", "BroodMarksAnchor", UIParent)
 anchorFrame:SetSize(1, 1)
 anchorFrame:SetMovable(true)
@@ -166,13 +124,6 @@ main:SetPoint("LEFT", anchorFrame, "LEFT", 0, 0)
 main:SetClampedToScreen(true)
 main:EnableMouse(false) -- the pip area itself is never the drag handle - see dragHint below
 
--- A persistent outline around the exact pip area, so while positioning
--- it there's no ambiguity about where the tracker actually sits or how
--- big it is - separate from each individual pip's own small border.
--- Only visible while unlocked; toggled in ApplyLockVisual via alpha
--- rather than Show/Hide, since main's own Show/Hide is already driven
--- by Update()'s tracker logic and shouldn't be fought over by two
--- different systems.
 main:SetBackdrop({
 	bgFile = "Interface\\Buttons\\WHITE8x8",
 	edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -182,11 +133,6 @@ main:SetBackdrop({
 main:SetBackdropColor(0, 0, 0, 0)
 main:SetBackdropBorderColor(1, 0.82, 0, 0)
 
--- The actual drag handle. Drags anchorFrame (not main directly) - main
--- just follows along live since it's permanently pinned to anchorFrame.
--- Its own anchor point isn't set here (LayoutPips positions it, since
--- where it belongs depends on growth direction - see DRAG_HINT_INFO
--- below).
 local dragHint = CreateFrame("Frame", nil, UIParent)
 dragHint:SetSize(110, 22)
 dragHint:SetMovable(true)
@@ -225,12 +171,6 @@ local function ApplyLockVisual()
 	main:SetBackdropBorderColor(1, 0.82, 0, unlocked and 0.9 or 0)
 end
 
--- Forward-declared: the actual minimap button is built near the bottom
--- of the file (it needs CreateOptionsPanel, defined later, for its
--- click handler), but the options panel checkbox that toggles it is
--- built here, well before that - referencing minimapButton itself (not
--- yet assigned) is fine since it's only read at click-time, by which
--- point the whole file has finished loading.
 local minimapButton
 local function ApplyMinimapVisual()
 	if minimapButton then
@@ -275,10 +215,7 @@ local function CreatePip(i)
 	return p
 end
 
--- Which edge of main is pinned to anchorFrame, matched to growth
--- direction - mirrors the same fixed-anchor-point approach used for the
--- Venom Bar, so the pip row always starts from the same fixed point
--- regardless of direction, pip count, or size.
+
 local TRACKER_GROWTH_INFO = {
 	RIGHT = { point = "LEFT", relPoint = "LEFT" },
 	LEFT  = { point = "RIGHT", relPoint = "LEFT" },
@@ -286,15 +223,6 @@ local TRACKER_GROWTH_INFO = {
 	UP    = { point = "BOTTOM", relPoint = "LEFT" },
 }
 
--- Where the drag handle sits relative to main, per direction - always
--- anchored to a corner of main that's entirely fixed for that direction
--- (never a center-point like "TOP", which drifts as the frame resizes),
--- and always at the base the pips grow away from rather than the end
--- that keeps moving. For RIGHT/LEFT growth the row's height never
--- changes, so "above, at the fixed side" works. For UP growth
--- specifically, the base is the *bottom* (pips grow upward from there),
--- so the handle sits below, not above - anchoring it above there would
--- both drift as stack count changed and sit at the wrong end entirely.
 local DRAG_HINT_INFO = {
 	RIGHT = { hintPoint = "BOTTOMLEFT", mainPoint = "TOPLEFT", x = 0, y = 8 },
 	LEFT  = { hintPoint = "BOTTOMRIGHT", mainPoint = "TOPRIGHT", x = 0, y = 8 },
@@ -413,13 +341,6 @@ local function CreateParticlePool()
 end
 CreateParticlePool()
 
--- OnUpdate doesn't run on a hidden frame, so any one-shot effect still
--- mid-animation right when main gets hidden (a particle burst, color
--- flash, or screen flash that hasn't finished fading yet) would freeze
--- rather than complete, then reappear still frozen mid-animation the
--- next time main shows again - e.g. a screen-edge flash getting stuck
--- on permanently after a Preview ends. Every main:Hide() call site
--- should call this first so there's nothing left to freeze.
 local function ClearInProgressEffects()
 	colorFlash.active = false
 	screenFlashState.active = false
@@ -432,11 +353,6 @@ end
 
 local function StartParticleBurst(color, maxCount)
 	maxCount = math.max(maxCount or 1, 1)
-	-- Spread across however many pips are actually shown, spawning from
-	-- each pip's own position rather than always bursting from main's
-	-- center - a wide multi-mark bar previously looked like the burst
-	-- only came from a single mark near the middle, since the burst
-	-- radius couldn't reach the outer pips.
 	local perPip = math.max(1, math.floor(NUM_PARTICLES / maxCount))
 	local mainX, mainY = main:GetCenter()
 	local scale = main:GetEffectiveScale()
@@ -445,11 +361,6 @@ local function StartParticleBurst(color, maxCount)
 		local pip = pips[pipIndex]
 		if pip and idx <= NUM_PARTICLES then
 			local pipX, pipY = pip:GetCenter()
-			-- GetCenter() returns screen-space coordinates, but SetPoint
-			-- offsets get multiplied by the parent's effective scale
-			-- internally - dividing here converts back to "main's own"
-			-- coordinate space so the offset lands in the right spot
-			-- regardless of the tracker's current scale setting.
 			local offsetX = (pipX and mainX and scale and scale ~= 0) and (pipX - mainX) / scale or 0
 			local offsetY = (pipY and mainY and scale and scale ~= 0) and (pipY - mainY) / scale or 0
 			for j = 1, perPip do
@@ -466,9 +377,7 @@ local function StartParticleBurst(color, maxCount)
 			end
 		end
 	end
-	-- Any leftover particles beyond maxCount*perPip (e.g. NUM_PARTICLES
-	-- doesn't divide evenly) just don't get activated this burst - fine,
-	-- they're simply unused for this particular trigger.
+
 end
 
 -- flags: { colorFlash=bool, particleBurst=bool, screenFlash=bool, sound=bool }
@@ -551,11 +460,7 @@ local function GetActiveTrackerKey()
 	return nil
 end
 
--- Scans both buffs and debuffs, since not every tracked resource is
--- necessarily coded as a "buff" even if it's beneficial to track -
--- Exposed Flesh in particular is a debuff (it increases damage taken),
--- while Brood Marks is a genuine buff. Trying both means neither tracker
--- needs to hardcode which list its aura lives in.
+
 local function GetStackCount(auraName)
 	for i = 1, 40 do
 		local name, _, icon, count = UnitBuff("player", i)
@@ -583,11 +488,6 @@ local currentTrackerKey = nil
 local wasAtMax = false
 local wasAtWarn = false
 
--- Re-lays-out using whichever tracker is currently active, for options
--- controls (scale/icon size/spacing/growth) that need to re-flow the
--- pips without necessarily changing max stack count. If no tracker is
--- active right now (e.g. you're not in either form), this is a no-op -
--- Update() will lay out correctly the next time one becomes active.
 local function LayoutPipsForCurrent()
 	if currentTrackerKey then
 		LayoutPips(GetDB()[TRACKERS[currentTrackerKey].maxKey])
@@ -616,25 +516,14 @@ local function Update()
 		icon = lastKnownIcon[trackerKey] or DEFAULT_TRACKER_ICON[trackerKey] or FALLBACK_ICON
 	else
 		count, icon = GetStackCount(buffName)
-		-- Only cache a real, non-empty icon path - a blank/invalid value
-		-- coming back from UnitBuff/UnitDebuff (which has happened for
-		-- Exposed Flesh specifically) would otherwise get remembered and
-		-- render as a blank white square instead of falling through to
-		-- a sensible placeholder.
+
 		if icon and icon ~= "" then lastKnownIcon[trackerKey] = icon end
 	end
 
-	-- Always re-lay-out for the current max count/icon size/spacing/
-	-- growth, not just when the tracker itself changes - otherwise a
-	-- settings change (max stacks, icon size, etc.) that doesn't also
-	-- happen to switch trackers can leave the bounding box sized for
-	-- whatever it was before, out of sync with the pips actually shown.
 	LayoutPips(maxCount)
 
 	if trackerKey ~= currentTrackerKey then
-		-- Switched trackers (changed form, or test-mode preview changed) -
-		-- reset one-shot state so a stale "was at max" from the other
-		-- tracker can't suppress the next real trigger.
+
 		wasAtMax = false
 		wasAtWarn = false
 		currentTrackerKey = trackerKey
@@ -758,10 +647,6 @@ local function Update()
 		main.bounceApplied = false
 	end
 
-	-- "Hide when not in combat" stays overridden while unlocked (so you
-	-- can still drag/position the frame at will) or while previewing via
-	-- test mode - the whole point of that mode is seeing it outside of
-	-- combat.
 	if d.hideOutOfCombat and d.locked and not d.testMode and not UnitAffectingCombat("player") then
 		-- Force-clear any in-progress one-shot effect before hiding, for
 		-- the same reason as the early-return path above.
@@ -772,14 +657,6 @@ local function Update()
 	end
 end
 
--- Preview shows a tracker at a chosen stack count regardless of real
--- lock/form state, by temporarily borrowing the same test-mode path
--- Update() already uses for that. Reusing that exact pipeline (rather
--- than a separate hand-rolled "just trigger the effects" function, which
--- is what this used to be) is what actually fixes the inconsistency
--- between "preview" and "test" - there's only one rendering/effect path
--- now, so whatever count you preview at naturally produces the same
--- warn/max effects the real thing would at that count, no separate
 -- logic to keep in sync.
 local previewExpireFrame = CreateFrame("Frame")
 local previewExpireElapsed = 0
@@ -796,10 +673,7 @@ local function DoPreview(trackerKey)
 	d.testMode = true
 	d.testTracker = trackerKey
 	d.testCount = d[countKey]
-	-- Force a fresh rising-edge check every time Preview is clicked, even
-	-- if the last preview left things already "at max" - otherwise a
-	-- repeat click at the same count wouldn't re-trigger the one-shot
-	-- effects, since as far as the tracker's concerned nothing changed.
+
 	wasAtMax = false
 	wasAtWarn = false
 	Update()
@@ -894,12 +768,6 @@ main:SetScript("OnUpdate", function(self, elapsed)
 		end
 	end
 
-	-- "Sustain until cleared": while a tier's condition holds and its
-	-- sustain toggle is on, keep re-firing color flash/particle
-	-- burst/screen flash every SUSTAIN_INTERVAL seconds instead of just
-	-- once. Sound is deliberately excluded from repeats - a repeating
-	-- alarm sound gets old fast; the one initial cue from Update() is
-	-- enough.
 	if self.atMax and self.maxSustain and self.maxFlags then
 		self.maxSustainT = (self.maxSustainT or 0) + elapsed
 		if self.maxSustainT >= SUSTAIN_INTERVAL then
@@ -961,18 +829,29 @@ end)
 -- Options panel
 --------------------------------------------------------------------------------
 
-local PANEL_WIDTH = 520
-local PANEL_HEIGHT = 620
-local MARGIN = 20
-local SCROLLBAR_GUTTER = 26 -- room for UIPanelScrollFrameTemplate's scrollbar
-local CONTENT_WIDTH = PANEL_WIDTH - MARGIN * 2 - SCROLLBAR_GUTTER
+local PANEL_WIDTH = 780
+local PANEL_HEIGHT = 660 -- tall enough that General's content (currently ~504px) fits with headroom to spare for future additions, without needing the scrollbar it still has by default
+local SIDEBAR_WIDTH = 170
+local TOPBAR_HEIGHT = 56
+local MARGIN = 16
+local SCROLLBAR_GUTTER = 20
+local CONTENT_WIDTH = PANEL_WIDTH - SIDEBAR_WIDTH - MARGIN * 2 - SCROLLBAR_GUTTER
 local COL_WIDTH = (CONTENT_WIDTH - 16) / 2
 
-local ROW_H = 24
-local ROW_GAP = 6
-local SLIDER_H = 44
+local ROW_H = 22
+local ROW_GAP = 8
+local SLIDER_H = 40
 local SECTION_HEADER_GAP = 22
-local SECTION_HEADER_H = 12
+local SECTION_HEADER_H = 14
+
+local C_BG = { 0.035, 0.035, 0.04, 0.98 }
+local C_SIDEBAR_BG = { 0.06, 0.06, 0.07, 1 }
+local C_TOPBAR_BG = { 0.05, 0.05, 0.06, 1 }
+local C_BORDER = { 0.16, 0.16, 0.18, 1 }
+local C_GOLD = { 1, 0.72, 0.15 }
+local C_TEXT = { 0.88, 0.88, 0.9 }
+local C_TEXT_DIM = { 0.5, 0.5, 0.54 }
+local C_ROW_ACTIVE = { 1, 0.72, 0.15, 0.13 }
 
 local TAB_ICONS = {
 	general = "Interface\\Icons\\Trade_Engineering",
@@ -980,18 +859,30 @@ local TAB_ICONS = {
 	ef = DEFAULT_TRACKER_ICON.ef,
 }
 
--- Builds an isolated set of layout helpers targeting a specific content
--- frame, each with its own vertical cursor - so each tab lays itself out
--- independently without stepping on the others.
--- Registered by every interactive control below; re-run each time the
--- options panel is shown, so it reflects state that may have changed
--- through another path (slash commands, form changes, etc.) since it was
--- last open - otherwise a control only ever reflects whatever GetDB()
--- held at the moment it was first created.
+local MEDIA_NORM_TEX = "Interface\\AddOns\\VenomancerAssistant\\Media\\normTex.tga"
+local MEDIA_CLOSE = "Interface\\AddOns\\VenomancerAssistant\\Media\\close.tga"
+local MEDIA_HIGHLIGHT = "Interface\\AddOns\\VenomancerAssistant\\Media\\Highlight.tga"
+local MEDIA_ARROW = "Interface\\AddOns\\VenomancerAssistant\\Media\\arrow.tga"
+
+
 local optionsRefreshers = {}
 
+-- A flat SOLID-color rectangle (borders, dividers, hard backgrounds).
+local function FlatTexture(parent, layer)
+	local tex = parent:CreateTexture(nil, layer or "ARTWORK")
+	tex:SetTexture("Interface\\Buttons\\WHITE8x8")
+	return tex
+end
+
+
+local function GradientTexture(parent, layer)
+	local tex = parent:CreateTexture(nil, layer or "ARTWORK")
+	tex:SetTexture(MEDIA_NORM_TEX)
+	return tex
+end
+
 local function CreateLayoutHelpers(target)
-	local y = -10
+	local y = -8
 
 	local function AdvanceY(amount)
 		y = y - amount
@@ -1006,15 +897,18 @@ local function CreateLayoutHelpers(target)
 		AdvanceY(SECTION_HEADER_GAP)
 		local header = target:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		PlaceLeft(header)
-		header:SetTextColor(1, 0.82, 0)
-		header:SetText(label)
-		AdvanceY(15)
+		header:SetWidth(CONTENT_WIDTH)
+		header:SetJustifyH("LEFT")
+		header:SetTextColor(C_GOLD[1], C_GOLD[2], C_GOLD[3])
+		header:SetText(label:upper())
 
-		local divider = target:CreateTexture(nil, "ARTWORK")
-		divider:SetTexture("Interface\\Common\\UI-TooltipDivider-Transparent")
+		AdvanceY(28)
+
+		local divider = FlatTexture(target)
+		divider:SetVertexColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
 		PlaceLeft(divider, -2)
 		divider:SetPoint("RIGHT", target, "RIGHT", 0, 0)
-		divider:SetHeight(8)
+		divider:SetHeight(1)
 		AdvanceY(SECTION_HEADER_H)
 		return header
 	end
@@ -1024,18 +918,52 @@ local function CreateLayoutHelpers(target)
 		PlaceLeft(fs, 2)
 		fs:SetWidth(CONTENT_WIDTH)
 		fs:SetJustifyH("LEFT")
+		fs:SetTextColor(C_TEXT_DIM[1], C_TEXT_DIM[2], C_TEXT_DIM[3])
 		fs:SetText(text)
 		AdvanceY(height or 28)
 		return fs
 	end
 
-	local function Checkbox(label, key, tooltip, xOffset)
-		local check = CreateFrame("CheckButton", "BroodMarksOpt" .. key .. tostring(target), target, "InterfaceOptionsCheckButtonTemplate")
+	-- Flat square toggle: solid gold fill when checked, dark outline
+	-- when not - replaces Blizzard's default checkmark-texture checkbox.
+	local function Checkbox(label, key, tooltip, xOffset, widthOverride)
+		local check = CreateFrame("Button", "VenomancerAssistantOpt" .. key .. tostring(target), target)
+		check:SetSize(ROW_H, ROW_H)
+		check:RegisterForClicks("LeftButtonUp")
 		PlaceLeft(check, xOffset)
-		_G[check:GetName() .. "Text"]:SetText(label)
-		check:SetChecked(GetDB()[key])
-		check:SetScript("OnClick", function(self)
-			GetDB()[key] = self:GetChecked() and true or false
+
+		local box = GradientTexture(check, "ARTWORK")
+		box:SetPoint("LEFT", 0, 0)
+		box:SetSize(15, 15)
+		check.box = box
+
+		local boxBorder = CreateFrame("Frame", nil, check)
+		boxBorder:SetPoint("TOPLEFT", box, "TOPLEFT", -1, 1)
+		boxBorder:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 1, -1)
+		boxBorder:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		boxBorder:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+
+		local text = check:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		text:SetPoint("LEFT", box, "RIGHT", 8, 0)
+		text:SetText(label)
+		text:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
+
+		check:SetWidth(math.max(widthOverride or (CONTENT_WIDTH - (xOffset or 0)), box:GetWidth() + 8))
+
+		local function Refresh()
+			local checked = GetDB()[key]
+			if checked then
+				box:SetVertexColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+			else
+				box:SetVertexColor(0, 0, 0, 0.4)
+			end
+		end
+		Refresh()
+
+		check:SetScript("OnClick", function()
+			local d = GetDB()
+			d[key] = not d[key]
+			Refresh()
 			if key == "locked" then ApplyLockVisual() end
 			if key == "minimapButtonShown" then ApplyMinimapVisual() end
 			Update()
@@ -1048,7 +976,7 @@ local function CreateLayoutHelpers(target)
 			end)
 			check:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		end
-		table.insert(optionsRefreshers, function() check:SetChecked(GetDB()[key]) end)
+		table.insert(optionsRefreshers, Refresh)
 		return check
 	end
 
@@ -1059,34 +987,45 @@ local function CreateLayoutHelpers(target)
 	end
 
 	local function CheckboxPair(labelA, keyA, tipA, labelB, keyB, tipB)
-		local a = Checkbox(labelA, keyA, tipA, 0)
-		local b = Checkbox(labelB, keyB, tipB, COL_WIDTH + 16)
+		local a = Checkbox(labelA, keyA, tipA, 0, COL_WIDTH)
+		local b = Checkbox(labelB, keyB, tipB, COL_WIDTH + 16, COL_WIDTH)
 		AdvanceY(ROW_H + ROW_GAP)
 		return a, b
 	end
 
+	-- Thin flat track + small gold square thumb, replacing
+	-- OptionsSliderTemplate's dated beveled look.
 	local function Slider(label, key, min, max, step, onChange)
-		-- Falls back to min rather than erroring if this key belongs to
-		-- another module whose defaults haven't been merged into the
-		-- shared saved-variables table yet by the time this tab gets
-		-- built - same defensive pattern as ColorSwatch above.
 		local function GetVal()
 			return GetDB()[key] or min
 		end
 
-		local sliderLabel = target:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local sliderLabel = target:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		PlaceLeft(sliderLabel, 2)
+		sliderLabel:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
 		sliderLabel:SetText(label .. ": " .. tostring(GetVal()))
 		AdvanceY(16)
 
-		local slider = CreateFrame("Slider", "BroodMarksOpt" .. key .. tostring(target), target, "OptionsSliderTemplate")
-		PlaceLeft(slider, 8)
-		slider:SetWidth(CONTENT_WIDTH - 16)
+		local slider = CreateFrame("Slider", "VenomancerAssistantOpt" .. key .. tostring(target), target)
+		slider:SetOrientation("HORIZONTAL")
+		PlaceLeft(slider, 2)
+		slider:SetWidth(CONTENT_WIDTH - 4)
+		slider:SetHeight(14)
+		slider:SetHitRectInsets(0, 0, -6, -6)
 		slider:SetMinMaxValues(min, max)
 		if slider.SetValueStep then slider:SetValueStep(step) end
-		_G[slider:GetName() .. "Low"]:SetText(tostring(min))
-		_G[slider:GetName() .. "High"]:SetText(tostring(max))
-		_G[slider:GetName() .. "Text"]:SetText("")
+
+		local track = FlatTexture(slider, "BACKGROUND")
+		track:SetPoint("LEFT", 0, 0)
+		track:SetPoint("RIGHT", 0, 0)
+		track:SetHeight(3)
+		track:SetVertexColor(1, 1, 1, 0.12)
+
+		local thumb = GradientTexture(slider, "OVERLAY")
+		thumb:SetSize(12, 12)
+		thumb:SetVertexColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+		slider:SetThumbTexture(thumb)
+
 		slider:SetValue(GetVal())
 		slider:SetScript("OnValueChanged", function(self, value)
 			if step >= 1 then value = math.floor(value + 0.5) else value = math.floor(value / step + 0.5) * step end
@@ -1104,12 +1043,13 @@ local function CreateLayoutHelpers(target)
 	end
 
 	local function EditBox(label, key, width)
-		local lbl = target:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local lbl = target:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		PlaceLeft(lbl, 2)
+		lbl:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
 		lbl:SetText(label)
 		AdvanceY(20)
 
-		local box = CreateFrame("EditBox", "BroodMarksOpt" .. key .. tostring(target), target, "InputBoxTemplate")
+		local box = CreateFrame("EditBox", "VenomancerAssistantOpt" .. key .. tostring(target), target, "InputBoxTemplate")
 		box:SetSize(width or 200, 20)
 		PlaceLeft(box, 8)
 		box:SetAutoFocus(false)
@@ -1128,45 +1068,72 @@ local function CreateLayoutHelpers(target)
 		return box
 	end
 
+	-- Flat pill button: dark fill, thin border, gold text, subtle
+	-- lighten-on-hover - replacing UIPanelButtonTemplate's 3D bevel.
 	local function Button(label, onClick)
-		local btn = CreateFrame("Button", nil, target, "UIPanelButtonTemplate")
-		btn:SetSize(180, 22)
+		local btn = CreateFrame("Button", nil, target)
+		btn:SetSize(180, 24)
+		btn:RegisterForClicks("LeftButtonUp")
 		PlaceLeft(btn, 0)
-		btn:SetText(label)
+
+		local bg = GradientTexture(btn, "BACKGROUND")
+		bg:SetAllPoints()
+		bg:SetVertexColor(1, 1, 1, 0.05)
+		btn.bg = bg
+
+		local border = CreateFrame("Frame", nil, btn)
+		border:SetAllPoints()
+		border:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		border:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+
+		local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
+		highlight:SetTexture(MEDIA_HIGHLIGHT)
+		highlight:SetAllPoints()
+		highlight:SetBlendMode("ADD")
+		highlight:SetAlpha(0.25)
+		btn:SetHighlightTexture(highlight)
+
+		local text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		text:SetPoint("CENTER")
+		text:SetText(label)
+		text:SetTextColor(C_GOLD[1], C_GOLD[2], C_GOLD[3])
+
 		btn:SetScript("OnClick", onClick)
-		AdvanceY(22 + ROW_GAP)
+
+		AdvanceY(24 + ROW_GAP)
 		return btn
 	end
 
 	local function ColorSwatch(label, key, onChange)
-		local lbl = target:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local lbl = target:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		PlaceLeft(lbl, 2)
+		lbl:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
 		lbl:SetText(label)
 
 		local swatch = CreateFrame("Button", nil, target)
-		swatch:SetSize(20, 20)
+		swatch:SetSize(18, 18)
+		swatch:RegisterForClicks("LeftButtonUp")
 		swatch:SetPoint("LEFT", lbl, "RIGHT", 12, 0)
-		swatch:SetBackdrop({
-			bgFile = "Interface\\Buttons\\WHITE8x8",
-			edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-			edgeSize = 8,
-			insets = { left = 1, right = 1, top = 1, bottom = 1 },
-		})
-		swatch:SetBackdropBorderColor(0.8, 0.8, 0.8, 1)
+
+		local fill = FlatTexture(swatch, "ARTWORK")
+		fill:SetAllPoints()
+		local border = CreateFrame("Frame", nil, swatch)
+		border:SetAllPoints()
+		border:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		border:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+
 		-- Falls back to white rather than erroring if this key belongs to
-		-- another module (e.g. the Venom Bar's warning colors) whose own
-		-- defaults haven't been merged into the shared saved-variables
-		-- table by the time this particular tab gets built - a defensive
-		-- safety net, not something that should normally trigger.
+		-- another module whose defaults haven't been merged into the
+		-- shared saved-variables table yet by the time this tab is built.
 		local c = GetDB()[key] or { 1, 1, 1 }
-		swatch:SetBackdropColor(c[1], c[2], c[3], 1)
+		fill:SetVertexColor(c[1], c[2], c[3], 1)
 
 		swatch:SetScript("OnClick", function()
 			local original = GetDB()[key] or { 1, 1, 1 }
 			local function ApplyColor()
 				local r, g, b = ColorPickerFrame:GetColorRGB()
 				GetDB()[key] = { r, g, b }
-				swatch:SetBackdropColor(r, g, b, 1)
+				fill:SetVertexColor(r, g, b, 1)
 				if onChange then onChange(r, g, b) end
 				Update()
 			end
@@ -1174,7 +1141,7 @@ local function CreateLayoutHelpers(target)
 			ColorPickerFrame.func = ApplyColor
 			ColorPickerFrame.cancelFunc = function()
 				GetDB()[key] = original
-				swatch:SetBackdropColor(original[1], original[2], original[3], 1)
+				fill:SetVertexColor(original[1], original[2], original[3], 1)
 				if onChange then onChange(original[1], original[2], original[3]) end
 				Update()
 			end
@@ -1191,17 +1158,226 @@ local function CreateLayoutHelpers(target)
 		AdvanceY(ROW_H + ROW_GAP)
 		table.insert(optionsRefreshers, function()
 			local col = GetDB()[key] or { 1, 1, 1 }
-			swatch:SetBackdropColor(col[1], col[2], col[3], 1)
+			fill:SetVertexColor(col[1], col[2], col[3], 1)
 		end)
 		return swatch
+	end
+
+
+	local function Dropdown(label, key, options, onChange)
+		local lbl = target:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		PlaceLeft(lbl, 2)
+		lbl:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
+		lbl:SetText(label)
+		AdvanceY(18)
+
+		local ddButton = CreateFrame("Button", nil, target)
+		ddButton:SetSize(200, 24)
+		ddButton:RegisterForClicks("LeftButtonUp")
+		PlaceLeft(ddButton, 2)
+
+		local bg = GradientTexture(ddButton, "BACKGROUND")
+		bg:SetAllPoints()
+		bg:SetVertexColor(1, 1, 1, 0.07)
+
+		local border = CreateFrame("Frame", nil, ddButton)
+		border:SetAllPoints()
+		border:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		border:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+
+		local ddHighlight = ddButton:CreateTexture(nil, "HIGHLIGHT")
+		ddHighlight:SetTexture(MEDIA_HIGHLIGHT)
+		ddHighlight:SetAllPoints()
+		ddHighlight:SetBlendMode("ADD")
+		ddHighlight:SetAlpha(0.15)
+		ddButton:SetHighlightTexture(ddHighlight)
+
+		local selectedText = ddButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		selectedText:SetPoint("LEFT", 10, 0)
+		selectedText:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
+
+		local arrow = ddButton:CreateTexture(nil, "OVERLAY")
+		arrow:SetSize(10, 10)
+		arrow:SetPoint("RIGHT", -8, 0)
+		arrow:SetTexture(MEDIA_ARROW)
+		arrow:SetTexCoord(0, 1, 1, 0) -- arrow.tga points up; flip vertically so closed = points down
+		arrow:SetVertexColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+
+		local rowHeight = 22
+		local listFrame = CreateFrame("Frame", nil, UIParent)
+		listFrame:SetFrameStrata("TOOLTIP")
+		listFrame:SetWidth(200)
+		listFrame:SetHeight(rowHeight * #options)
+		listFrame:Hide()
+		local listBG = FlatTexture(listFrame, "BACKGROUND")
+		listBG:SetAllPoints()
+		listBG:SetVertexColor(C_BG[1], C_BG[2], C_BG[3], 1)
+		local listBorder = CreateFrame("Frame", nil, listFrame)
+		listBorder:SetAllPoints()
+		listBorder:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		listBorder:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+
+		local function CloseList()
+			listFrame:Hide()
+			arrow:SetTexCoord(0, 1, 1, 0)
+		end
+
+		for i, opt in ipairs(options) do
+			local row = CreateFrame("Button", nil, listFrame)
+			row:SetSize(200, rowHeight)
+			row:SetPoint("TOP", 0, -(i - 1) * rowHeight)
+			row:RegisterForClicks("LeftButtonUp")
+
+			local rowHighlight = row:CreateTexture(nil, "HIGHLIGHT")
+			rowHighlight:SetTexture(MEDIA_HIGHLIGHT)
+			rowHighlight:SetAllPoints()
+			rowHighlight:SetBlendMode("ADD")
+			rowHighlight:SetAlpha(0.2)
+			row:SetHighlightTexture(rowHighlight)
+
+			local rowText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			rowText:SetPoint("LEFT", 10, 0)
+			rowText:SetText(opt.label)
+			rowText:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
+
+			row:SetScript("OnClick", function()
+				GetDB()[key] = opt.value
+				selectedText:SetText(opt.label)
+				CloseList()
+				if onChange then onChange(opt.value) end
+				Update()
+			end)
+		end
+
+		ddButton:SetScript("OnClick", function()
+			if listFrame:IsShown() then
+				CloseList()
+			else
+				listFrame:ClearAllPoints()
+				listFrame:SetPoint("TOP", ddButton, "BOTTOM", 0, -2)
+				listFrame:Show()
+				arrow:SetTexCoord(0, 1, 0, 1) -- open = points up
+			end
+		end)
+
+		local function Refresh()
+			local current = GetDB()[key]
+			for _, opt in ipairs(options) do
+				if opt.value == current then selectedText:SetText(opt.label) end
+			end
+		end
+		Refresh()
+		table.insert(optionsRefreshers, Refresh)
+		-- Close along with the whole options panel, rather than leaving
+		-- an orphaned floating list up if the panel gets hidden while a
+		-- dropdown happens to be open.
+		table.insert(optionsRefreshers, CloseList)
+
+		AdvanceY(24 + ROW_GAP)
+		return ddButton
 	end
 
 	return {
 		AdvanceY = AdvanceY, PlaceLeft = PlaceLeft, Section = Section, Note = Note,
 		Checkbox = Checkbox, CheckboxRow = CheckboxRow, CheckboxPair = CheckboxPair,
 		Slider = Slider, EditBox = EditBox, Button = Button, ColorSwatch = ColorSwatch,
+		Dropdown = Dropdown,
 		GetY = function() return y end,
 	}
+end
+
+
+local function CreateSubTabPager(container, defs, startY)
+	startY = startY or 0
+	local PILL_HEIGHT = 26
+	local PILL_GAP = 6
+	local pillWidth = (CONTENT_WIDTH - (#defs - 1) * PILL_GAP) / #defs
+
+	local subButtons = {}
+	local subContents = {}
+
+	for i, def in ipairs(defs) do
+		local btn = CreateFrame("Button", nil, container)
+		btn:SetSize(pillWidth, PILL_HEIGHT)
+		btn:SetPoint("TOPLEFT", (i - 1) * (pillWidth + PILL_GAP), startY)
+		btn:RegisterForClicks("LeftButtonUp")
+
+		local bg = GradientTexture(btn, "BACKGROUND")
+		bg:SetAllPoints()
+
+		local border = CreateFrame("Frame", nil, btn)
+		border:SetAllPoints()
+		border:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		border:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+
+		local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
+		highlight:SetTexture(MEDIA_HIGHLIGHT)
+		highlight:SetAllPoints()
+		highlight:SetBlendMode("ADD")
+		highlight:SetAlpha(0.15)
+		btn:SetHighlightTexture(highlight)
+
+		local text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		text:SetPoint("CENTER")
+		text:SetText(def.label)
+
+		btn.bg = bg
+		btn.text = text
+		subButtons[def.key] = btn
+
+		local content = CreateFrame("Frame", nil, container)
+		content:SetPoint("TOPLEFT", 0, startY - (PILL_HEIGHT + 14))
+		content:SetWidth(CONTENT_WIDTH)
+		content:SetHeight(1) -- grown to fit once that sub-tab's content is laid out
+		content:Hide()
+		subContents[def.key] = content
+	end
+
+	local function SelectSub(key)
+		for k, btn in pairs(subButtons) do
+			local selected = k == key
+			if selected then
+				btn.bg:SetVertexColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 0.85)
+				btn.text:SetTextColor(0, 0, 0)
+			else
+				btn.bg:SetVertexColor(1, 1, 1, 0.06)
+				btn.text:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
+			end
+			subContents[k]:SetShown(selected)
+		end
+
+		container:SetHeight(-startY + PILL_HEIGHT + 14 + subContents[key]:GetHeight() + 20)
+	end
+
+	for key, btn in pairs(subButtons) do
+		btn:SetScript("OnClick", function() SelectSub(key) end)
+	end
+
+	return subContents, SelectSub
+end
+
+local function SkinScrollBar(scrollFrame)
+	local barName = scrollFrame:GetName() .. "ScrollBar"
+	local scrollBar = _G[barName]
+	if not scrollBar then return end
+
+	local upButton = _G[barName .. "ScrollUpButton"]
+	local downButton = _G[barName .. "ScrollDownButton"]
+	if upButton then upButton:EnableMouse(false); upButton:SetAlpha(0) end
+	if downButton then downButton:EnableMouse(false); downButton:SetAlpha(0) end
+
+	local track = scrollBar:CreateTexture(nil, "BACKGROUND")
+	track:SetPoint("TOP", scrollBar, "TOP", 0, 0)
+	track:SetPoint("BOTTOM", scrollBar, "BOTTOM", 0, 0)
+	track:SetWidth(3)
+	track:SetTexture(1, 1, 1, 0.08)
+
+	local thumb = _G[barName .. "ThumbTexture"]
+	if thumb then
+		thumb:SetTexture("Interface\\Buttons\\WHITE8x8")
+		thumb:SetVertexColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 0.85)
+		thumb:SetWidth(5)
+	end
 end
 
 local optionsPanel
@@ -1212,108 +1388,137 @@ local function CreateOptionsPanel()
 	panel:SetSize(PANEL_WIDTH, PANEL_HEIGHT)
 	panel:SetPoint("CENTER")
 	panel:SetBackdrop({
-		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-		tile = true, tileSize = 32, edgeSize = 32,
-		insets = { left = 11, right = 12, top = 12, bottom = 11 },
+		bgFile = "Interface\\Buttons\\WHITE8x8",
+		edgeFile = "Interface\\Buttons\\WHITE8x8",
+		edgeSize = 1,
 	})
+	panel:SetBackdropColor(C_BG[1], C_BG[2], C_BG[3], C_BG[4])
+	panel:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
 	panel:SetMovable(true)
 	panel:SetClampedToScreen(true)
 	panel:SetFrameStrata("DIALOG")
 	panel:Hide()
 	tinsert(UISpecialFrames, "BroodMarksOptionsFrame")
 
-	local titleBar = CreateFrame("Frame", nil, panel)
-	titleBar:SetPoint("TOPLEFT", 12, -10)
-	titleBar:SetPoint("TOPRIGHT", -32, -10)
-	titleBar:SetHeight(24)
-	titleBar:EnableMouse(true)
-	titleBar:RegisterForDrag("LeftButton")
-	titleBar:SetScript("OnDragStart", function() panel:StartMoving() end)
-	titleBar:SetScript("OnDragStop", function() panel:StopMovingOrSizing() end)
+	--------------------------------------------------------------------
+	-- Top bar: title (draggable), Lock toggle pill, close button
+	--------------------------------------------------------------------
+	local topBar = CreateFrame("Frame", nil, panel)
+	topBar:SetPoint("TOPLEFT", 0, 0)
+	topBar:SetPoint("TOPRIGHT", 0, 0)
+	topBar:SetHeight(TOPBAR_HEIGHT)
+	local topBarBG = FlatTexture(topBar, "BACKGROUND")
+	topBarBG:SetAllPoints()
+	topBarBG:SetVertexColor(C_TOPBAR_BG[1], C_TOPBAR_BG[2], C_TOPBAR_BG[3], 1)
+	local topBarLine = FlatTexture(topBar, "ARTWORK")
+	topBarLine:SetPoint("BOTTOMLEFT", 0, 0)
+	topBarLine:SetPoint("BOTTOMRIGHT", 0, 0)
+	topBarLine:SetHeight(1)
+	topBarLine:SetVertexColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
 
-	local closeBtn = CreateFrame("Button", nil, panel, "UIPanelCloseButton")
-	closeBtn:SetPoint("TOPRIGHT", -4, -4)
+	topBar:EnableMouse(true)
+	topBar:RegisterForDrag("LeftButton")
+	topBar:SetScript("OnDragStart", function() panel:StartMoving() end)
+	topBar:SetScript("OnDragStop", function() panel:StopMovingOrSizing() end)
+
+	local title = topBar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", 16, -8)
+	title:SetText("Venomancer Assistant")
+	title:SetTextColor(C_GOLD[1], C_GOLD[2], C_GOLD[3])
+
+	local dragHintText = topBar:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	dragHintText:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
+	dragHintText:SetText("Drag the title bar to move this window")
+	dragHintText:SetTextColor(C_TEXT_DIM[1], C_TEXT_DIM[2], C_TEXT_DIM[3])
+
+	local closeBtn = CreateFrame("Button", nil, topBar)
+	closeBtn:SetSize(20, 20)
+	closeBtn:RegisterForClicks("LeftButtonUp")
+	closeBtn:SetPoint("RIGHT", -12, 0)
+	local closeIcon = closeBtn:CreateTexture(nil, "ARTWORK")
+	closeIcon:SetAllPoints()
+	closeIcon:SetTexture(MEDIA_CLOSE)
+	closeIcon:SetVertexColor(0.7, 0.7, 0.72, 1)
+	local closeHighlight = closeBtn:CreateTexture(nil, "HIGHLIGHT")
+	closeHighlight:SetAllPoints()
+	closeHighlight:SetTexture(MEDIA_CLOSE)
+	closeHighlight:SetVertexColor(0.9, 0.25, 0.25, 1)
+	closeBtn:SetHighlightTexture(closeHighlight)
 	closeBtn:SetScript("OnClick", function() panel:Hide() end)
 
-	local title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	title:SetPoint("LEFT", 4, 0)
-	title:SetText("Venomancer Assistant")
 
-	local dragHint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	dragHint:SetPoint("TOPLEFT", titleBar, "BOTTOMLEFT", 4, -2)
-	dragHint:SetText("Drag the title bar to move this window")
+	local lockPill = CreateFrame("Button", nil, topBar)
+	lockPill:SetSize(84, 24)
+	lockPill:RegisterForClicks("LeftButtonUp")
+	lockPill:SetPoint("RIGHT", closeBtn, "LEFT", -10, 0)
+	local lockBG = GradientTexture(lockPill, "ARTWORK")
+	lockBG:SetAllPoints()
+	local lockHighlight = lockPill:CreateTexture(nil, "HIGHLIGHT")
+	lockHighlight:SetTexture(MEDIA_HIGHLIGHT)
+	lockHighlight:SetAllPoints()
+	lockHighlight:SetBlendMode("ADD")
+	lockHighlight:SetAlpha(0.2)
+	lockPill:SetHighlightTexture(lockHighlight)
+	local lockText = lockPill:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	lockText:SetPoint("CENTER")
+
+	local function RefreshLockPill()
+		local locked = GetDB().locked
+		lockBG:SetVertexColor(locked and C_GOLD[1] or 1, locked and C_GOLD[2] or 1, locked and C_GOLD[3] or 1, locked and 0.85 or 0.08)
+		lockText:SetText(locked and "Locked" or "Unlocked")
+		lockText:SetTextColor(locked and 0 or C_TEXT[1], locked and 0 or C_TEXT[2], locked and 0 or C_TEXT[3])
+	end
+	RefreshLockPill()
+	lockPill:SetScript("OnClick", function()
+		local d = GetDB()
+		d.locked = not d.locked
+		ApplyLockVisual()
+		Update()
+		RefreshLockPill()
+	end)
+	table.insert(optionsRefreshers, RefreshLockPill)
 
 	--------------------------------------------------------------------
-	-- Tab bar - built dynamically: the tab row's width/positions can't
-	-- be finalized until the full tab set is known, and that set now
-	-- includes whatever other modules (namely the Venom Bar) register
-	-- via RegisterTab below. Content-building happens per-tab as each
-	-- is registered; the visual button row is laid out once at the end.
+	-- Sidebar navigation
 	--------------------------------------------------------------------
-	local tabBarY = -68
-	local contentTop = tabBarY - 44
-	local contentHeight = PANEL_HEIGHT + contentTop - 30
+	local sidebar = CreateFrame("Frame", nil, panel)
+	sidebar:SetPoint("TOPLEFT", topBar, "BOTTOMLEFT", 0, 0)
+	sidebar:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, 0)
+	sidebar:SetWidth(SIDEBAR_WIDTH)
+	local sidebarBG = FlatTexture(sidebar, "BACKGROUND")
+	sidebarBG:SetAllPoints()
+	sidebarBG:SetVertexColor(C_SIDEBAR_BG[1], C_SIDEBAR_BG[2], C_SIDEBAR_BG[3], 1)
+	local sidebarLine = FlatTexture(sidebar, "ARTWORK")
+	sidebarLine:SetPoint("TOPRIGHT", 0, 0)
+	sidebarLine:SetPoint("BOTTOMRIGHT", 0, 0)
+	sidebarLine:SetWidth(1)
+	sidebarLine:SetVertexColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
 
-	local tabButtons = {}
+	local navButtons = {}
 	local tabContents = {}
 	local tabOrder = {}
 	local tabLabels = {}
 	local tabIcons = {}
 
 	local function SelectTab(tabKey)
-		for key, btn in pairs(tabButtons) do
+		for key, btn in pairs(navButtons) do
 			local selected = key == tabKey
 			btn.selected = selected
-			btn.bg:SetTexture(selected and 0.25 or 0.1, selected and 0.22 or 0.1, selected and 0.05 or 0.1, selected and 0.9 or 0.55)
-			btn.underline:SetShown(selected)
-			btn.label:SetTextColor(selected and 1 or 0.75, selected and 0.82 or 0.75, selected and 0 or 0.75)
+			if selected then
+				btn.bg:SetVertexColor(C_ROW_ACTIVE[1], C_ROW_ACTIVE[2], C_ROW_ACTIVE[3], C_ROW_ACTIVE[4])
+				btn.stripe:Show()
+				btn.text:SetTextColor(C_GOLD[1], C_GOLD[2], C_GOLD[3])
+			else
+				btn.bg:SetVertexColor(0, 0, 0, 0)
+				btn.stripe:Hide()
+				btn.text:SetTextColor(C_TEXT[1], C_TEXT[2], C_TEXT[3])
+			end
 			tabContents[key]:GetParent():SetShown(selected)
 		end
 	end
 
-	-- Registers a tab's metadata and content area (scrollframe + scroll
-	-- child), returning the scroll child to build that tab's controls
-	-- into. Exposed to other modules via VenomBarModule.BuildOptionsTab
-	-- below, so a tab can be added without this file needing to know
-	-- about that module ahead of time.
-	-- Reskins a UIPanelScrollFrameTemplate's default scrollbar (a fairly
-	-- blocky grey Blizzard widget) to something closer to the rest of
-	-- this panel's look: the up/down step buttons are hidden (mousewheel
-	-- still scrolls fine without them), and the thumb is replaced with a
-	-- slim gold bar. Every lookup is nil-guarded - if a sub-widget name
-	-- doesn't match what's expected on this client, that piece is just
-	-- skipped rather than erroring, consistent with how the rest of this
-	-- addon handles uncertain client-specific naming.
-	local function SkinScrollBar(scrollFrame)
-		local barName = scrollFrame:GetName() .. "ScrollBar"
-		local scrollBar = _G[barName]
-		if not scrollBar then return end
+	local contentHeight = PANEL_HEIGHT - TOPBAR_HEIGHT - 24
 
-		local upButton = _G[barName .. "ScrollUpButton"]
-		local downButton = _G[barName .. "ScrollDownButton"]
-		if upButton then
-			upButton:EnableMouse(false)
-			upButton:SetAlpha(0)
-		end
-		if downButton then
-			downButton:EnableMouse(false)
-			downButton:SetAlpha(0)
-		end
-
-		local track = scrollBar:CreateTexture(nil, "BACKGROUND")
-		track:SetPoint("TOP", scrollBar, "TOP", 0, 0)
-		track:SetPoint("BOTTOM", scrollBar, "BOTTOM", 0, 0)
-		track:SetWidth(4)
-		track:SetTexture(0, 0, 0, 0.35)
-
-		local thumb = _G[barName .. "ThumbTexture"]
-		if thumb then
-			thumb:SetTexture("Interface\\Buttons\\WHITE8x8")
-			thumb:SetVertexColor(1, 0.82, 0, 0.9)
-			thumb:SetWidth(6)
-		end
-	end
 
 	local function RegisterTab(key, label, icon)
 		tabOrder[#tabOrder + 1] = key
@@ -1321,7 +1526,7 @@ local function CreateOptionsPanel()
 		tabIcons[key] = icon
 
 		local scrollFrame = CreateFrame("ScrollFrame", "VenomancerAssistantOptTab" .. key .. "Scroll", panel, "UIPanelScrollFrameTemplate")
-		scrollFrame:SetPoint("TOPLEFT", MARGIN, contentTop)
+		scrollFrame:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", MARGIN, -12)
 		scrollFrame:SetSize(CONTENT_WIDTH, contentHeight)
 		scrollFrame:Hide()
 		SkinScrollBar(scrollFrame)
@@ -1335,7 +1540,6 @@ local function CreateOptionsPanel()
 		return scrollChild
 	end
 
-	--------------------------------------------------------------------
 	-- Tab: General (shared frame settings)
 	--------------------------------------------------------------------
 	do
@@ -1343,7 +1547,7 @@ local function CreateOptionsPanel()
 		local L = CreateLayoutHelpers(sc)
 		L.Note("Tracks whichever resource matches your current form, and shows one icon per stack. Drag the tracker frame itself to move it while unlocked.")
 		L.Section("General")
-		L.CheckboxRow("Lock frame position", "locked", "Prevents dragging the tracker and Venom Bar around, and hides the drag handles and bounding box.")
+		L.Note("Lock/unlock is now the pill button at the top of this window, next to Close - it applies to the tracker, the Venom Bar, and the warning text all at once.")
 		L.CheckboxRow("Show minimap button", "minimapButtonShown", "Show or hide the draggable minimap icon that opens these options.")
 
 		L.Section("Tracker Appearance (Brood Marks & Exposed Flesh)")
@@ -1355,36 +1559,12 @@ local function CreateOptionsPanel()
 		L.Slider("Icon size", "iconSize", 12, 64, 1, LayoutPipsForCurrent)
 		L.Slider("Icon spacing", "spacing", -8, 20, 1, LayoutPipsForCurrent)
 
-		local growthLabel = sc:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-		L.PlaceLeft(growthLabel, 2)
-		growthLabel:SetText("Growth direction:")
-		L.AdvanceY(20)
-
-		local trackerGrowthButtons = {}
-		local trackerGrowthOrder = { "RIGHT", "LEFT", "UP", "DOWN" }
-		local trackerGrowthLabels = { RIGHT = "Right", LEFT = "Left", UP = "Up", DOWN = "Down" }
-		for i, dir in ipairs(trackerGrowthOrder) do
-			local btn = CreateFrame("CheckButton", "BroodMarksGrowth" .. dir, sc, "UIRadioButtonTemplate")
-			L.PlaceLeft(btn, 2 + (i - 1) * 80)
-			_G[btn:GetName() .. "Text"]:SetText(trackerGrowthLabels[dir])
-			trackerGrowthButtons[dir] = btn
-		end
-
-		local function RefreshGrowthRadios()
-			local current = GetDB().growth
-			for dir, btn in pairs(trackerGrowthButtons) do
-				btn:SetChecked(dir == current)
-			end
-		end
-		for dir, btn in pairs(trackerGrowthButtons) do
-			btn:SetScript("OnClick", function()
-				GetDB().growth = dir
-				RefreshGrowthRadios()
-				LayoutPipsForCurrent()
-			end)
-		end
-		RefreshGrowthRadios()
-		table.insert(optionsRefreshers, RefreshGrowthRadios)
+		L.Dropdown("Growth direction", "growth", {
+			{ value = "RIGHT", label = "Right" },
+			{ value = "LEFT", label = "Left" },
+			{ value = "UP", label = "Up" },
+			{ value = "DOWN", label = "Down" },
+		}, LayoutPipsForCurrent)
 		sc:SetHeight(-L.GetY() + 20)
 	end
 
@@ -1397,47 +1577,63 @@ local function CreateOptionsPanel()
 		L.Note("Tracked while Spider Form is active.")
 		L.CheckboxRow("Enable Brood Marks tracking", "bmEnabled", "Turn the whole Brood Marks tracker on or off - useful if you only want the Venom Bar and/or Exposed Flesh.")
 
-		L.Section("Early Warning")
-		L.Note("Fires before you hit max, so you have time to react. Independent from the max-stack effects below.")
-		L.CheckboxRow("Enable early warning", "bmWarnEnabled", "Turn the whole early-warning tier on or off. When off, only the max-stack effects below will fire.")
-		L.Slider("Warn at stack count", "bmWarnThreshold", 1, 4, 1)
-		L.ColorSwatch("Warning color:", "bmWarnColor")
-		L.CheckboxRow("Sustain until cleared", "bmWarnSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're past the warning threshold, instead of firing once.")
-		L.CheckboxPair(
-			"Glow border", "bmWarnGlow", "Pulses a glow around each pip once you cross the warning threshold.",
-			"Pulse / scale bounce", "bmWarnPulse", "Gentle scale \"breathing\" on the tracker once you cross the warning threshold."
-		)
-		L.CheckboxPair(
-			"Color flash", "bmWarnColorFlash", "Flashes the pip borders when you cross the threshold.",
-			"Particle burst", "bmWarnParticleBurst", "Bursts particles from the tracker when you cross the threshold."
-		)
-		L.CheckboxPair(
-			"Screen-edge flash", "bmWarnScreenFlash", "Flashes along the screen edges when you cross the threshold.",
-			"Sound cue", "bmWarnSound", "Plays a sound once when you cross the warning threshold."
-		)
+		local subs, SelectSub = CreateSubTabPager(sc, {
+			{ key = "warn", label = "Early Warning" },
+			{ key = "max", label = "Max Stacks" },
+			{ key = "preview", label = "Preview" },
+		}, L.GetY())
 
-		L.Section("Max Stack Effects")
-		L.Note("Pick any combination. Glow and Pulse run for as long as you're at max stacks; Color flash/Particle burst/Screen flash fire once when you reach it, or keep repeating if \"Sustain\" is on.")
-		L.ColorSwatch("Effect color:", "maxColor")
-		L.CheckboxRow("Sustain until cleared", "maxSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're at max stacks, instead of firing once.")
-		L.CheckboxPair(
-			"Glow border", "flashAtMax", "Pulses a glow around each pip while at max stacks.",
-			"Pulse / scale bounce", "effectPulse", "Gentle scale \"breathing\" on the tracker while at max stacks."
-		)
-		L.CheckboxPair(
-			"Color flash", "effectColorFlash", "Flashes the pip borders when you reach max stacks.",
-			"Particle burst", "effectParticleBurst", "Bursts particles from the tracker when you reach max stacks."
-		)
-		L.CheckboxPair(
-			"Screen-edge flash", "effectScreenFlash", "Flashes along the screen edges when you reach max stacks.",
-			"Sound cue", "effectSound", "Plays a sound once when you reach max stacks."
-		)
+		do
+			local L2 = CreateLayoutHelpers(subs.warn)
+			L2.Note("Fires before you hit max, so you have time to react. Independent from the max-stack effects on the other tab.")
+			L2.CheckboxRow("Enable early warning", "bmWarnEnabled", "Turn the whole early-warning tier on or off. When off, only the max-stack effects will fire.")
+			L2.Slider("Warn at stack count", "bmWarnThreshold", 1, 4, 1)
+			L2.ColorSwatch("Warning color:", "bmWarnColor")
+			L2.CheckboxRow("Sustain until cleared", "bmWarnSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're past the warning threshold, instead of firing once.")
+			L2.CheckboxPair(
+				"Glow border", "bmWarnGlow", "Pulses a glow around each pip once you cross the warning threshold.",
+				"Pulse / scale bounce", "bmWarnPulse", "Gentle scale \"breathing\" on the tracker once you cross the warning threshold."
+			)
+			L2.CheckboxPair(
+				"Color flash", "bmWarnColorFlash", "Flashes the pip borders when you cross the threshold.",
+				"Particle burst", "bmWarnParticleBurst", "Bursts particles from the tracker when you cross the threshold."
+			)
+			L2.CheckboxPair(
+				"Screen-edge flash", "bmWarnScreenFlash", "Flashes along the screen edges when you cross the threshold.",
+				"Sound cue", "bmWarnSound", "Plays a sound once when you cross the warning threshold."
+			)
+			subs.warn:SetHeight(-L2.GetY() + 20)
+		end
 
-		L.Section("Preview")
-		L.Note("Shows the tracker at the chosen count for a few seconds, regardless of form or lock state. Below the warning threshold shows plain stacks, at or past it triggers the warning effects, and reaching 5 triggers the max-stack effects.", 40)
-		L.Slider("Preview stack count", "bmPreviewCount", 0, 5, 1)
-		L.Button("Preview", function() DoPreview("bm") end)
-		sc:SetHeight(-L.GetY() + 20)
+		do
+			local L2 = CreateLayoutHelpers(subs.max)
+			L2.Note("Pick any combination. Glow and Pulse run for as long as you're at max stacks; Color flash/Particle burst/Screen flash fire once when you reach it, or keep repeating if \"Sustain\" is on.")
+			L2.ColorSwatch("Effect color:", "maxColor")
+			L2.CheckboxRow("Sustain until cleared", "maxSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're at max stacks, instead of firing once.")
+			L2.CheckboxPair(
+				"Glow border", "flashAtMax", "Pulses a glow around each pip while at max stacks.",
+				"Pulse / scale bounce", "effectPulse", "Gentle scale \"breathing\" on the tracker while at max stacks."
+			)
+			L2.CheckboxPair(
+				"Color flash", "effectColorFlash", "Flashes the pip borders when you reach max stacks.",
+				"Particle burst", "effectParticleBurst", "Bursts particles from the tracker when you reach max stacks."
+			)
+			L2.CheckboxPair(
+				"Screen-edge flash", "effectScreenFlash", "Flashes along the screen edges when you reach max stacks.",
+				"Sound cue", "effectSound", "Plays a sound once when you reach max stacks."
+			)
+			subs.max:SetHeight(-L2.GetY() + 20)
+		end
+
+		do
+			local L2 = CreateLayoutHelpers(subs.preview)
+			L2.Note("Shows the tracker at the chosen count for a few seconds, regardless of form or lock state. Below the warning threshold shows plain stacks, at or past it triggers the warning effects, and reaching 5 triggers the max-stack effects.", 54)
+			L2.Slider("Preview stack count", "bmPreviewCount", 0, 5, 1)
+			L2.Button("Preview", function() DoPreview("bm") end)
+			subs.preview:SetHeight(-L2.GetY() + 20)
+		end
+
+		SelectSub("warn")
 	end
 
 	--------------------------------------------------------------------
@@ -1449,98 +1645,120 @@ local function CreateOptionsPanel()
 		L.Note("Tracked while Beetle Form is active.")
 		L.CheckboxRow("Enable Exposed Flesh tracking", "efEnabled", "Turn the whole Exposed Flesh tracker on or off - useful if you only want the Venom Bar and/or Brood Marks.")
 
-		L.Section("Early Warning")
-		L.Note("Fires before you hit max, so you have time to clear it. Independent from the max-stack effects below.")
-		L.CheckboxRow("Enable early warning", "efWarnEnabled", "Turn the whole early-warning tier on or off. When off, only the max-stack effects below will fire.")
-		L.Slider("Warn at stack count", "efWarnThreshold", 1, 9, 1)
-		L.ColorSwatch("Warning color:", "efWarnColor")
-		L.CheckboxRow("Sustain until cleared", "efWarnSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're past the warning threshold, instead of firing once.")
-		L.CheckboxPair(
-			"Glow border", "efWarnGlow", "Pulses a glow around each pip once you cross the warning threshold.",
-			"Pulse / scale bounce", "efWarnPulse", "Gentle scale \"breathing\" on the tracker once you cross the warning threshold."
-		)
-		L.CheckboxPair(
-			"Color flash", "efWarnColorFlash", "Flashes the pip borders when you cross the threshold.",
-			"Particle burst", "efWarnParticleBurst", "Bursts particles from the tracker when you cross the threshold."
-		)
-		L.CheckboxPair(
-			"Screen-edge flash", "efWarnScreenFlash", "Flashes along the screen edges when you cross the threshold.",
-			"Sound cue", "efWarnSound", "Plays a sound once when you cross the warning threshold."
-		)
+		local subs, SelectSub = CreateSubTabPager(sc, {
+			{ key = "warn", label = "Early Warning" },
+			{ key = "max", label = "Max Stacks" },
+			{ key = "preview", label = "Preview" },
+		}, L.GetY())
 
-		L.Section("Max Stack Effects")
-		L.Note("Fires once you actually hit max - time to clear it now.")
-		L.ColorSwatch("Max color:", "efMaxColor")
-		L.CheckboxRow("Sustain until cleared", "efMaxSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're at max stacks, instead of firing once.")
-		L.CheckboxPair(
-			"Glow border", "efFlashAtMax", "Pulses a glow around each pip while at max stacks.",
-			"Pulse / scale bounce", "efEffectPulse", "Gentle scale \"breathing\" on the tracker while at max stacks."
-		)
-		L.CheckboxPair(
-			"Color flash", "efEffectColorFlash", "Flashes the pip borders when you reach max stacks.",
-			"Particle burst", "efEffectParticleBurst", "Bursts particles from the tracker when you reach max stacks."
-		)
-		L.CheckboxPair(
-			"Screen-edge flash", "efEffectScreenFlash", "Flashes along the screen edges when you reach max stacks.",
-			"Sound cue", "efEffectSound", "Plays a sound once when you reach max stacks."
-		)
+		do
+			local L2 = CreateLayoutHelpers(subs.warn)
+			L2.Note("Fires before you hit max, so you have time to clear it. Independent from the max-stack effects on the other tab.")
+			L2.CheckboxRow("Enable early warning", "efWarnEnabled", "Turn the whole early-warning tier on or off. When off, only the max-stack effects will fire.")
+			L2.Slider("Warn at stack count", "efWarnThreshold", 1, 9, 1)
+			L2.ColorSwatch("Warning color:", "efWarnColor")
+			L2.CheckboxRow("Sustain until cleared", "efWarnSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're past the warning threshold, instead of firing once.")
+			L2.CheckboxPair(
+				"Glow border", "efWarnGlow", "Pulses a glow around each pip once you cross the warning threshold.",
+				"Pulse / scale bounce", "efWarnPulse", "Gentle scale \"breathing\" on the tracker once you cross the warning threshold."
+			)
+			L2.CheckboxPair(
+				"Color flash", "efWarnColorFlash", "Flashes the pip borders when you cross the threshold.",
+				"Particle burst", "efWarnParticleBurst", "Bursts particles from the tracker when you cross the threshold."
+			)
+			L2.CheckboxPair(
+				"Screen-edge flash", "efWarnScreenFlash", "Flashes along the screen edges when you cross the threshold.",
+				"Sound cue", "efWarnSound", "Plays a sound once when you cross the warning threshold."
+			)
+			subs.warn:SetHeight(-L2.GetY() + 20)
+		end
 
-		L.Section("Preview")
-		L.Note("Shows the tracker at the chosen count for a few seconds, regardless of form or lock state. Below the warning threshold shows plain stacks, at or past it triggers the warning effects, and reaching 10 triggers the max-stack effects.", 40)
-		L.Slider("Preview stack count", "efPreviewCount", 0, 10, 1)
-		L.Button("Preview", function() DoPreview("ef") end)
-		sc:SetHeight(-L.GetY() + 20)
+		do
+			local L2 = CreateLayoutHelpers(subs.max)
+			L2.Note("Fires once you actually hit max - time to clear it now.")
+			L2.ColorSwatch("Max color:", "efMaxColor")
+			L2.CheckboxRow("Sustain until cleared", "efMaxSustain", "Keep repeating color flash, particle burst, and screen flash every ~0.8s for as long as you're at max stacks, instead of firing once.")
+			L2.CheckboxPair(
+				"Glow border", "efFlashAtMax", "Pulses a glow around each pip while at max stacks.",
+				"Pulse / scale bounce", "efEffectPulse", "Gentle scale \"breathing\" on the tracker while at max stacks."
+			)
+			L2.CheckboxPair(
+				"Color flash", "efEffectColorFlash", "Flashes the pip borders when you reach max stacks.",
+				"Particle burst", "efEffectParticleBurst", "Bursts particles from the tracker when you reach max stacks."
+			)
+			L2.CheckboxPair(
+				"Screen-edge flash", "efEffectScreenFlash", "Flashes along the screen edges when you reach max stacks.",
+				"Sound cue", "efEffectSound", "Plays a sound once when you reach max stacks."
+			)
+			subs.max:SetHeight(-L2.GetY() + 20)
+		end
+
+		do
+			local L2 = CreateLayoutHelpers(subs.preview)
+			L2.Note("Shows the tracker at the chosen count for a few seconds, regardless of form or lock state. Below the warning threshold shows plain stacks, at or past it triggers the warning effects, and reaching 10 triggers the max-stack effects.", 54)
+			L2.Slider("Preview stack count", "efPreviewCount", 0, 10, 1)
+			L2.Button("Preview", function() DoPreview("ef") end)
+			subs.preview:SetHeight(-L2.GetY() + 20)
+		end
+
+		SelectSub("warn")
 	end
 
 	-- Let other modules (the Venom Bar, and anything added later) add
 	-- their own tab now that the built-in ones exist and both this file
 	-- and theirs have fully loaded.
 	if VenomBarModule and VenomBarModule.BuildOptionsTab then
-		VenomBarModule.BuildOptionsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers)
+		VenomBarModule.BuildOptionsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers, CreateSubTabPager)
 	end
 	if VenomBarModule and VenomBarModule.BuildWarningsTab then
-		VenomBarModule.BuildWarningsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers)
+		VenomBarModule.BuildWarningsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers, CreateSubTabPager)
 	end
 
-	-- Now that the full tab set is known, lay out the tab button row.
-	local tabWidth = (CONTENT_WIDTH - (#tabOrder - 1) * 6) / #tabOrder
-	for i, key in ipairs(tabOrder) do
-		local btn = CreateFrame("Button", nil, panel)
-		btn:SetSize(tabWidth, 36)
-		btn:SetPoint("TOPLEFT", MARGIN + (i - 1) * (tabWidth + 6), tabBarY)
+	-- Now that the full nav set is known (built-in pages plus whatever
+	-- other modules added above), lay out the sidebar buttons themselves.
+	local navY = -10
+	for _, key in ipairs(tabOrder) do
+		local btn = CreateFrame("Button", nil, sidebar)
+		btn:RegisterForClicks("LeftButtonUp")
+		btn:SetPoint("TOPLEFT", 0, navY)
+		btn:SetPoint("TOPRIGHT", 0, navY)
+		btn:SetHeight(34)
 
-		local bg = btn:CreateTexture(nil, "BACKGROUND")
+		local bg = GradientTexture(btn, "BACKGROUND")
 		bg:SetAllPoints()
-		bg:SetTexture(0.1, 0.1, 0.1, 0.55)
+		bg:SetVertexColor(0, 0, 0, 0)
 		btn.bg = bg
+
+		local stripe = FlatTexture(btn, "ARTWORK")
+		stripe:SetPoint("TOPLEFT", 0, 0)
+		stripe:SetPoint("BOTTOMLEFT", 0, 0)
+		stripe:SetWidth(2)
+		stripe:SetVertexColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+		stripe:Hide()
+		btn.stripe = stripe
 
 		local icon = btn:CreateTexture(nil, "ARTWORK")
 		icon:SetSize(18, 18)
-		icon:SetPoint("TOP", 0, -4)
+		icon:SetPoint("LEFT", 14, 0)
 		icon:SetTexture(tabIcons[key])
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
-		local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-		label:SetPoint("BOTTOM", 0, 4)
-		label:SetText(tabLabels[key])
-		btn.label = label
+		local text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		text:SetPoint("LEFT", icon, "RIGHT", 10, 0)
+		text:SetText(tabLabels[key])
+		btn.text = text
 
-		local underline = btn:CreateTexture(nil, "OVERLAY")
-		underline:SetHeight(2)
-		underline:SetPoint("BOTTOMLEFT", 2, 0)
-		underline:SetPoint("BOTTOMRIGHT", -2, 0)
-		underline:SetTexture(1, 0.82, 0, 1)
-		btn.underline = underline
+		local navHighlight = btn:CreateTexture(nil, "HIGHLIGHT")
+		navHighlight:SetTexture(MEDIA_HIGHLIGHT)
+		navHighlight:SetAllPoints()
+		navHighlight:SetBlendMode("ADD")
+		navHighlight:SetAlpha(0.15)
+		btn:SetHighlightTexture(navHighlight)
 
-		btn:SetScript("OnEnter", function(self)
-			if not self.selected then self.bg:SetTexture(0.18, 0.18, 0.18, 0.7) end
-		end)
-		btn:SetScript("OnLeave", function(self)
-			if not self.selected then self.bg:SetTexture(0.1, 0.1, 0.1, 0.55) end
-		end)
 		btn:SetScript("OnClick", function() SelectTab(key) end)
 
-		tabButtons[key] = btn
+		navButtons[key] = btn
+		navY = navY - 34
 	end
 
 	SelectTab("general")
@@ -1588,12 +1806,6 @@ SlashCmdList.VENOMANCERASSISTANT = function(msg)
 	end
 end
 
--- Deliberately NOT calling CreateOptionsPanel() eagerly here. It's built
--- lazily on first actual open (slash command or minimap click) instead -
--- both of which only happen after every addon file has finished loading,
--- which is what lets VenomBarModule.BuildOptionsTab (in VenomBar.lua,
--- loaded after this file per the .toc) safely add its own tab the very
--- first time the panel is constructed.
 
 --------------------------------------------------------------------------------
 -- Minimap button
@@ -1618,10 +1830,6 @@ minimapBorder:SetSize(53, 53)
 minimapBorder:SetPoint("TOPLEFT")
 minimapBorder:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
 
--- SetHighlightTexture is a native Button behavior - shows automatically
--- on mouseover and hides on leave, no OnEnter/OnLeave scripting needed.
--- Same texture Blizzard's own minimap tracking buttons use, so it
--- matches the highlight style of everything else around the minimap.
 minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 local highlight = minimapButton:GetHighlightTexture()
 highlight:SetSize(30, 30)
