@@ -89,6 +89,7 @@ local function GetDB()
 	if d.cdShowParty == nil then d.cdShowParty = true end
 	if d.cdShowRaid == nil then d.cdShowRaid = true end
 	if d.cdShowBattleground == nil then d.cdShowBattleground = true end
+	if d.cdRequireBeetleForm == nil then d.cdRequireBeetleForm = false end
 
 	if d.cdManaShowSolo == nil then d.cdManaShowSolo = true end
 	if d.cdManaShowParty == nil then d.cdManaShowParty = true end
@@ -488,6 +489,18 @@ local function GetGroupContext()
 	return "solo"
 end
 
+-- Generic form check, kept separate from any particular watcher so it can
+-- be reused later for a Spider Form (caster/healer) cooldown set, etc. -
+-- each future watcher would just call IsInForm() with its own form name.
+local function IsInForm(formName)
+	local form = GetShapeshiftForm and GetShapeshiftForm()
+	if form and form > 0 then
+		local _, name = GetShapeshiftFormInfo(form)
+		return name == formName
+	end
+	return false
+end
+
 -- Returns: state ("buff"/"charging"/"cooldown"/"ready"), remain, total,
 -- charges, maxCharges, icon
 local function GetAbilityState(ability)
@@ -693,8 +706,9 @@ local function Refresh()
 		or (ctx == "party" and d.cdShowParty)
 		or (ctx == "raid" and d.cdShowRaid)
 		or (ctx == "battleground" and d.cdShowBattleground)
+	local roleOK = (not d.cdRequireBeetleForm) or IsInForm("Beetle Form")
 
-	if d.cdLocked and ((d.cdHideOutOfCombat and not UnitAffectingCombat("player")) or not contextOK) then
+	if d.cdLocked and ((d.cdHideOutOfCombat and not UnitAffectingCombat("player")) or not contextOK or not roleOK) then
 		main:Hide()
 	else
 		main:Show()
@@ -817,6 +831,7 @@ function CooldownWatcherModule.BuildOptionsTab(RegisterTab, CreateLayoutHelpers,
 		L2.CheckboxRow("Show in a party", "cdShowParty")
 		L2.CheckboxRow("Show in a raid", "cdShowRaid")
 		L2.CheckboxRow("Show in battlegrounds/arenas", "cdShowBattleground")
+		L2.CheckboxRow("Only show while in Beetle Form", "cdRequireBeetleForm", "Off by default. Beetle Form is where these abilities live, so this hides the watcher any time you're not in it.")
 		subs.general:SetHeight(-L2.GetY() + 20)
 	end
 
