@@ -1395,7 +1395,6 @@ local function CreateOptionsPanel()
 	panel:SetBackdropColor(C_BG[1], C_BG[2], C_BG[3], C_BG[4])
 	panel:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
 	panel:SetMovable(true)
-	panel:SetClampedToScreen(true)
 	panel:SetFrameStrata("DIALOG")
 	panel:Hide()
 	tinsert(UISpecialFrames, "BroodMarksOptionsFrame")
@@ -1474,7 +1473,13 @@ local function CreateOptionsPanel()
 		d.locked = not d.locked
 		ApplyLockVisual()
 		Update()
+		if CooldownWatcherModule and CooldownWatcherModule.SetAllLocked then
+			CooldownWatcherModule.SetAllLocked(d.locked)
+		end
 		RefreshLockPill()
+		for _, refresh in ipairs(optionsRefreshers) do
+			refresh()
+		end
 	end)
 	table.insert(optionsRefreshers, RefreshLockPill)
 
@@ -1710,6 +1715,13 @@ local function CreateOptionsPanel()
 	if VenomBarModule and VenomBarModule.BuildOptionsTab then
 		VenomBarModule.BuildOptionsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers, CreateSubTabPager)
 	end
+	if CooldownWatcherModule and CooldownWatcherModule.BuildOptionsTab then
+		CooldownWatcherModule.BuildOptionsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers, CreateSubTabPager)
+	end
+	if CooldownWatcherModule and CooldownWatcherModule.BuildManaTab then
+		CooldownWatcherModule.BuildManaTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers, CreateSubTabPager)
+	end
+	-- Warnings goes last in the sidebar - registered after everything else.
 	if VenomBarModule and VenomBarModule.BuildWarningsTab then
 		VenomBarModule.BuildWarningsTab(RegisterTab, CreateLayoutHelpers, optionsRefreshers, CreateSubTabPager)
 	end
