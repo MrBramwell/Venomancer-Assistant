@@ -1,9 +1,10 @@
 ## Interface: 30300
 ## Title: Venomancer Assistant
-## Notes: Brood Marks (Spider Form) and Exposed Flesh (Beetle Form) stack trackers, plus a Venom Bar for applying weapon venoms.
+## Notes: Brood Marks (Spider Form) and Exposed Flesh (Beetle Form) stack trackers, a Venom Bar for applying weapon venoms, and a Cooldown Watcher for Beetle Form defensives.
 ## Author: MrBramwell on CoA Rexxar (Lyonsbane, Sorrowxoth, Falliia, Raederle)
-## Version: 1.1
+## Version: 1.2
 ## SavedVariables: VenomancerAssistantDB, BroodMarksDB
 
 VenomancerAssistant.lua
 VenomBar.lua
+CooldownWatcher.lua
