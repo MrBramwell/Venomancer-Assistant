@@ -1,0 +1,18 @@
+## Interface: 30300
+## Title: Venomancer Assistant
+## Notes: Per-form tabs (Spider/Beetle/Weaver/Vizier), Buff Tracking (Tome of Ahn'kahet, Buff Alerts), Venom Bar, and a shared Mana bar.
+## Author: MrBramwell on CoA Rexxar (Lyonsbane, Sorrowxoth, Falliia, Raederle)
+## Version: 2.0
+## SavedVariables: VenomancerAssistantDB
+
+Core.lua
+StackTracker.lua
+BeetleDefenses.lua
+SpiderForm.lua
+BeetleForm.lua
+WeaverForm.lua
+VizierForm.lua
+VenomBar.lua
+BuffTracking.lua
+ManaBar.lua
+Main.lua
