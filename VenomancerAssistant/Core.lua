@@ -36,7 +36,7 @@ function Core.GetRootDB()
 	VenomancerAssistantDB = VenomancerAssistantDB or {}
 	local root = VenomancerAssistantDB
 	root.general = root.general or {}
-	local GENERAL_DEFAULTS = { minimapButtonShown = true, minimapAngle = 225, masterLocked = false }
+	local GENERAL_DEFAULTS = { minimapButtonShown = true, minimapAngle = 225, masterLocked = false, showGridWhenUnlocked = true }
 	for k, v in pairs(GENERAL_DEFAULTS) do
 		if root.general[k] == nil then root.general[k] = v end
 	end
