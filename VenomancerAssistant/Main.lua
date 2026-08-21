@@ -39,6 +39,25 @@ local function DestroyPanel()
 	end
 end
 
+-- GameTooltip defaults to TOOLTIP strata too - same tier as the options
+-- panel, and same bug class as the dropdown list: a shared global frame
+-- parented straight to UIParent has a low frame level, so it was losing
+-- to the panel's own nested children. Only touch its level when the
+-- tooltip actually belongs to something inside our own panel, so
+-- tooltips everywhere else in the game are untouched.
+GameTooltip:HookScript("OnShow", function(self)
+	if not (panel and panel:IsShown()) then return end
+	local owner = self:GetOwner()
+	local f = owner
+	while f do
+		if f == panel then
+			self:SetFrameLevel(panel:GetFrameLevel() + 100)
+			return
+		end
+		f = f:GetParent()
+	end
+end)
+
 -- Rebuild on the next open if a spec swap may have changed form
 -- availability, instead of tearing the panel down mid-use.
 local panelDirty = false
@@ -49,6 +68,104 @@ local minimapButton -- forward-declared so BuildGeneralTab's closure captures th
 
 local lastSelectedTabKey
 local RebuildPreservingTab -- forward-declared so lockPill's OnClick (built inside CreateOptionsPanel, defined below) captures this local, not a global
+
+--------------------------------------------------------------------------------
+-- Alignment grid - shown whenever anything is unlocked, to help line up
+-- trackers/bars against each other and screen center. Center lines are
+-- bold red; everything else is a light grey line every 50px, spaced
+-- outward symmetrically from center rather than from a screen edge.
+--------------------------------------------------------------------------------
+
+local GRID_SPACING = 50
+
+local gridFrame = CreateFrame("Frame", "VAAlignmentGrid", UIParent)
+gridFrame:SetAllPoints(UIParent)
+gridFrame:SetFrameStrata("FULLSCREEN_DIALOG") -- same tier as the trackers it's meant to help align
+gridFrame:EnableMouse(false)
+gridFrame:Hide()
+
+local gridLines = {}
+
+local function BuildGrid()
+	for _, line in ipairs(gridLines) do line:Hide() end
+	wipe(gridLines)
+
+	local w, h = UIParent:GetWidth(), UIParent:GetHeight()
+	local centerX, centerY = w / 2, h / 2
+
+	local function VLine(x, isCenter)
+		local line = gridFrame:CreateTexture(nil, "OVERLAY")
+		line:SetTexture("Interface\\Buttons\\WHITE8x8")
+		if isCenter then
+			line:SetVertexColor(1, 0.15, 0.15, 0.95)
+			line:SetWidth(3)
+		else
+			line:SetVertexColor(1, 1, 1, 0.15)
+			line:SetWidth(1)
+		end
+		line:SetPoint("TOP", gridFrame, "TOPLEFT", x, 0)
+		line:SetPoint("BOTTOM", gridFrame, "BOTTOMLEFT", x, 0)
+		gridLines[#gridLines + 1] = line
+	end
+
+	local function HLine(y, isCenter)
+		local line = gridFrame:CreateTexture(nil, "OVERLAY")
+		line:SetTexture("Interface\\Buttons\\WHITE8x8")
+		if isCenter then
+			line:SetVertexColor(1, 0.15, 0.15, 0.95)
+			line:SetHeight(3)
+		else
+			line:SetVertexColor(1, 1, 1, 0.15)
+			line:SetHeight(1)
+		end
+		line:SetPoint("LEFT", gridFrame, "TOPLEFT", 0, -y)
+		line:SetPoint("RIGHT", gridFrame, "TOPRIGHT", 0, -y)
+		gridLines[#gridLines + 1] = line
+	end
+
+	VLine(centerX, true)
+	local x = centerX + GRID_SPACING
+	while x <= w do VLine(x, false); x = x + GRID_SPACING end
+	x = centerX - GRID_SPACING
+	while x >= 0 do VLine(x, false); x = x - GRID_SPACING end
+
+	HLine(centerY, true)
+	local y = centerY + GRID_SPACING
+	while y <= h do HLine(y, false); y = y + GRID_SPACING end
+	y = centerY - GRID_SPACING
+	while y >= 0 do HLine(y, false); y = y - GRID_SPACING end
+end
+
+local function AnyUnlocked()
+	for _, entry in ipairs(Core.LockableModules) do
+		if not entry.dbFn().locked then return true end
+	end
+	return false
+end
+
+local gridResizeFrame = CreateFrame("Frame")
+gridResizeFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
+gridResizeFrame:RegisterEvent("UI_SCALE_CHANGED")
+gridResizeFrame:SetScript("OnEvent", BuildGrid)
+
+local gridWasShown = false
+local gridTicker = CreateFrame("Frame")
+local gridElapsed = 0
+gridTicker:SetScript("OnUpdate", function(self, e)
+	gridElapsed = gridElapsed + e
+	if gridElapsed < 0.3 then return end
+	gridElapsed = 0
+	local shouldShow = generalDB().showGridWhenUnlocked and AnyUnlocked()
+	if shouldShow and not gridWasShown then
+		-- Rebuild right as it's about to show, using whatever UIParent
+		-- reports right now - building once at ADDON_LOADED (very early,
+		-- before the UI has necessarily settled to its true resolution/
+		-- scale) was the actual bug behind the grid being off-center.
+		BuildGrid()
+	end
+	gridWasShown = shouldShow
+	gridFrame:SetShown(shouldShow)
+end)
 
 local function CreateOptionsPanel()
 	local p = CreateFrame("Frame", "VenomancerAssistantOptionsFrame", UIParent)
@@ -333,6 +450,7 @@ function Core.BuildGeneralTab(RegisterTab, CreateLayoutHelpers, CreateSubTabPage
 	L.CheckboxRow("Show minimap button", "minimapButtonShown", "Show or hide the draggable minimap icon that opens these options.", function()
 		minimapButton:SetShown(generalDB().minimapButtonShown)
 	end)
+	L.CheckboxRow("Draw grid when unlocked", "showGridWhenUnlocked", "Shows an alignment grid across the screen whenever anything is unlocked for repositioning. Center lines are bold red; the rest are a light grey, every 50px.")
 	sc:SetHeight(-L.GetY() + 20)
 end
 
