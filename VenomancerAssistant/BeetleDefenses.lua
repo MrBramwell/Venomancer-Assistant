@@ -493,9 +493,16 @@ local function GetRecentAttackerCount()
 end
 
 local mobWarnWasActive = false
+local mobWarnSettleUntil = 0 -- see PLAYER_ENTERING_WORLD handling below
 
 local function UpdateMobWarning(d, carapaceStacks)
 	if not d.mobWarnEnabled then return false end
+	-- Same reasoning as StackTracker/BuffTracking's settle windows -
+	-- carapaceStacks can transiently misread right as you zone in, and
+	-- combat-log attacker entries from just before a zone transition can
+	-- still be within the timeout window on the other side of it. Block
+	-- the whole check (not just the sound) until things settle.
+	if GetTime() < mobWarnSettleUntil then return false end
 	local mobCount = GetRecentAttackerCount()
 	local active = UnitAffectingCombat("player") and mobCount >= d.mobWarnThreshold and (not carapaceStacks or carapaceStacks == 0)
 	if active and not mobWarnWasActive and d.mobWarnSound then
@@ -634,6 +641,12 @@ events:RegisterEvent("SPELL_UPDATE_COOLDOWN")
 events:SetScript("OnEvent", function(self, event, arg1)
 	if event == "UNIT_AURA" or event == "UNIT_SPELLCAST_SUCCEEDED" then
 		if arg1 == "player" or arg1 == nil then Refresh() end
+	elseif event == "PLAYER_ENTERING_WORLD" then
+		wipe(recentAttackers) -- old attackers from before the zone transition shouldn't carry over
+		mobWarnSettleUntil = GetTime() + 1.5
+		mobWarnWasActive = false
+		Core.After(1.5, Refresh)
+		Refresh()
 	else
 		Refresh()
 	end
